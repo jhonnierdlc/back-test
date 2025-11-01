@@ -1,0 +1,116 @@
+# Azure DevOps Pipeline para EmployeeApi
+# Compila la aplicación .NET y ejecuta las pruebas unitarias
+
+trigger:
+- main
+- develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotNetVersion: '8.0.x'  # Usar .NET 8 que es más estable
+
+jobs:
+- job: BuildAndTest
+  displayName: 'Build and Test'
+  steps:
+  
+  # Instalar .NET SDK 8
+  - task: UseDotNet@2
+    displayName: 'Install .NET 8 SDK'
+    inputs:
+      packageType: 'sdk'
+      version: $(dotNetVersion)
+      includePreviewVersions: false
+  
+  # Mostrar información de .NET
+  - script: |
+      dotnet --version
+      dotnet --info
+    displayName: 'Display .NET info'
+  
+  # Restaurar dependencias con más verbosidad
+  - task: DotNetCoreCLI@2
+    displayName: 'Restore packages'
+    inputs:
+      command: 'restore'
+      projects: '**/*.csproj'
+      feedsToUse: 'select'
+      verbosityRestore: 'Detailed'
+  
+  # Compilar toda la solución de una vez
+  - task: DotNetCoreCLI@2
+    displayName: 'Build solution'
+    inputs:
+      command: 'build'
+      projects: '**/*.csproj'
+      arguments: '--configuration $(buildConfiguration) --no-restore --verbosity normal'
+  
+  # Instalar herramientas de Entity Framework
+  - task: DotNetCoreCLI@2
+    displayName: 'Install EF Core tools'
+    inputs:
+      command: 'custom'
+      custom: 'tool'
+      arguments: 'install --global dotnet-ef'
+  
+  # Crear migración inicial si no existe
+  - script: |
+      cd EmployeeApi
+      if [ ! -d "Migrations" ]; then
+        echo "Creating initial migration..."
+        dotnet ef migrations add InitialCreate
+      else
+        echo "Migrations already exist"
+      fi
+    displayName: 'Create initial migration'
+    continueOnError: true
+  
+  # Ejecutar pruebas básicas primero
+  - task: DotNetCoreCLI@2
+    displayName: 'Run unit tests'
+    inputs:
+      command: 'test'
+      projects: 'EmployeeApi.Tests/*.csproj'
+      arguments: '--configuration $(buildConfiguration) --no-build --logger trx'
+      publishTestResults: true
+    continueOnError: true
+  
+  # Ejecutar pruebas con cobertura usando coverlet.msbuild
+  - task: DotNetCoreCLI@2
+    displayName: 'Run tests with coverage'
+    inputs:
+      command: 'test'
+      projects: 'EmployeeApi.Tests/*.csproj'
+      arguments: '--configuration $(buildConfiguration) --no-build /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:CoverletOutput=$(Build.SourcesDirectory)/coverage/'
+      publishTestResults: false
+    continueOnError: true
+  
+  # Publicar cobertura de código
+  - task: PublishCodeCoverageResults@1
+    displayName: 'Publish code coverage'
+    condition: succeededOrFailed()
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: '$(Build.SourcesDirectory)/coverage/coverage.cobertura.xml'
+      failIfCoverageEmpty: false
+  
+  # Publicar la aplicación
+  - task: DotNetCoreCLI@2
+    displayName: 'Publish application'
+    inputs:
+      command: 'publish'
+      projects: 'EmployeeApi/*.csproj'
+      arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)'
+      publishWebProjects: false
+      zipAfterPublish: true
+  
+  # Publicar artefactos
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish build artifacts'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'EmployeeApi'
+      publishLocation: 'Container'
